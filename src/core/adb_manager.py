@@ -42,8 +42,15 @@ class ADBManager:
     def _base_cmd(self) -> list[str]:
         """Constructs the base ADB command prefix with optional target device serial."""
         cmd = [self.adb_bin or "adb"]
-        if self.serial:
-            cmd.extend(["-s", self.serial])
+        serial = self.serial
+        if not serial and not self.mock_mode:
+            # Auto-select the first device if multiple devices are connected
+            devices = self.list_devices()
+            if devices:
+                serial = devices[0].serial
+                self.serial = serial
+        if serial:
+            cmd.extend(["-s", serial])
         return cmd
 
     def check_connection(self) -> bool:
