@@ -10,6 +10,8 @@ import asyncio
 import io
 import shutil
 import subprocess
+import sys
+import threading
 from collections.abc import AsyncGenerator
 
 from PIL import Image, ImageDraw
@@ -38,6 +40,7 @@ class ADBManager:
 
         self.serial = serial
         self._active_logcat_proc: asyncio.subprocess.Process | None = None
+        self._active_popen: subprocess.Popen | None = None
 
     def _base_cmd(self) -> list[str]:
         """Constructs the base ADB command prefix with optional target device serial."""
@@ -233,37 +236,67 @@ class ADBManager:
             return
 
         cmd = self._base_cmd() + ["logcat", "-v", "threadtime"]
-        self._active_logcat_proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1000)
+
+        # Use standard subprocess.Popen with threadsafe queue to avoid Windows SelectorEventLoop NotImplementedError
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
         )
+        self._active_popen = proc
+
+        def reader_thread():
+            try:
+                if proc.stdout:
+                    for line in proc.stdout:
+                        if loop.is_closed():
+                            break
+                        stripped = line.strip()
+                        if stripped:
+                            try:
+                                loop.call_soon_threadsafe(queue.put_nowait, stripped)
+                            except RuntimeError:
+                                break
+            except Exception:
+                pass
+            finally:
+                if not loop.is_closed():
+                    try:
+                        loop.call_soon_threadsafe(queue.put_nowait, None)
+                    except RuntimeError:
+                        pass
+
+        t = threading.Thread(target=reader_thread, daemon=True)
+        t.start()
 
         try:
-            while self._active_logcat_proc and self._active_logcat_proc.stdout:
-                line_bytes = await self._active_logcat_proc.stdout.readline()
-                if not line_bytes:
+            while True:
+                item = await queue.get()
+                if item is None:
                     break
-                line = line_bytes.decode("utf-8", errors="replace").strip()
-                if line:
-                    yield line
-        except asyncio.CancelledError:
-            if self._active_logcat_proc:
-                try:
-                    self._active_logcat_proc.terminate()
-                except ProcessLookupError:
-                    pass
-            raise
+                yield item
         finally:
-            if self._active_logcat_proc:
+            if proc.poll() is None:
                 try:
-                    self._active_logcat_proc.kill()
-                except ProcessLookupError:
+                    proc.terminate()
+                except Exception:
                     pass
-                self._active_logcat_proc = None
+            self._active_popen = None
 
     def stop_streaming(self):
         """Terminates active logcat subprocess if running."""
+        if self._active_popen:
+            try:
+                self._active_popen.terminate()
+            except Exception:
+                pass
+            self._active_popen = None
         if self._active_logcat_proc:
             try:
                 self._active_logcat_proc.kill()
