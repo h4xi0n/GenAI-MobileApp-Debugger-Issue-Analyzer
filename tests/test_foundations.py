@@ -310,6 +310,26 @@ def test_server_rest_endpoints():
     assert r_cmd.status_code == 200
     assert r_cmd.json()["status"] == "success"
 
+    # Toggle stream command
+    cmd_toggle = {"type": "TOGGLE_STREAM", "payload": {"active": False}}
+    r_toggle = client.post("/api/device/command", json=cmd_toggle)
+    assert r_toggle.status_code == 200
+    assert r_toggle.json()["is_streaming_active"] is False
+
+    cmd_toggle_on = {"type": "TOGGLE_STREAM", "payload": {"active": True}}
+    r_toggle_on = client.post("/api/device/command", json=cmd_toggle_on)
+    assert r_toggle_on.status_code == 200
+    assert r_toggle_on.json()["is_streaming_active"] is True
+
+    # Device select
+    r_sel_json = client.post("/api/device/select", json={"serial": "device-123"})
+    assert r_sel_json.status_code == 200
+    assert r_sel_json.json()["serial"] == "device-123"
+
+    r_sel_query = client.get("/api/device/select?serial=device-456")
+    assert r_sel_query.status_code == 200
+    assert r_sel_query.json()["serial"] == "device-456"
+
 
 # -----------------------------------------------------------------------------
 # 7. Privacy Compliance Gate Test

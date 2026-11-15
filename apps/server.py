@@ -8,10 +8,16 @@ Author: Arun Krishnan
 
 import asyncio
 import json
+import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -49,11 +55,14 @@ TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initializes background workers on startup and cleans up on shutdown."""
-    global logcat_background_task
+    global logcat_background_task, screen_background_task
     logcat_background_task = asyncio.create_task(logcat_worker())
+    screen_background_task = asyncio.create_task(screen_stream_worker())
     yield
     if logcat_background_task:
         logcat_background_task.cancel()
+    if screen_background_task:
+        screen_background_task.cancel()
     adb_manager.stop_streaming()
 
 
@@ -81,6 +90,11 @@ screen_inspector = ScreenInspector()
 ring_buffer = FrameRingBuffer(capacity=5)
 log_window = SlidingLogWindow(max_lines=300)
 logcat_parser = LogcatParser()
+
+# Background Task Handles & Streaming Control Flags
+logcat_background_task: asyncio.Task | None = None
+screen_background_task: asyncio.Task | None = None
+is_streaming_active: bool = True
 
 
 class ConnectionManager:
@@ -165,22 +179,61 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
-logcat_background_task: asyncio.Task | None = None
 
 
 async def logcat_worker():
-    """Background task continuously pulling logcat lines from ADBManager and broadcasting."""
+    """Continuously ingests logcat lines from ADBManager and broadcasts to clients.
+
+    Consumes the asynchronous line stream from ADB, parses each entry into a LogEntry,
+    stores it in the sliding log window buffer, and broadcasts it across connected
+    logcat WebSocket clients. Automatically reconnects with a 2-second backoff
+    upon stream failure or disconnection.
+    """
     logger.info("Starting logcat ingestion worker...")
+    while True:
+        try:
+            async for line in adb_manager.stream_logcat_lines():
+                entry = logcat_parser.parse_line(line)
+                if entry:
+                    log_window.add(entry)
+                    await manager.broadcast_log_entry(entry)
+        except asyncio.CancelledError:
+            logger.info("Logcat worker task cancelled.")
+            break
+        except Exception as e:
+            logger.error(f"Error in logcat worker (reconnecting in 2s): {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                logger.info("Logcat worker task cancelled during reconnect sleep.")
+                break
+
+
+async def screen_stream_worker():
+    """Continuous background worker capturing ADB frames and broadcasting to UI stream clients.
+
+    Runs a frame polling loop throttled to ~2.5 FPS (400ms sleep intervals). Captures
+    screenshots from ADB off the main event loop thread, processes raw bytes into
+    ScreenFrame models, stores them in the rolling frame ring buffer, and broadcasts
+    them to connected /ws/stream clients when streaming is active.
+    """
+    logger.info("Starting screen stream worker...")
     try:
-        async for line in adb_manager.stream_logcat_lines():
-            entry = logcat_parser.parse_line(line)
-            if entry:
-                log_window.add(entry)
-                await manager.broadcast_log_entry(entry)
+        while True:
+            # Poll only when streaming is active and at least one stream client is connected
+            if is_streaming_active and len(manager.stream_clients) > 0:
+                try:
+                    raw_bytes = await asyncio.to_thread(adb_manager.capture_screenshot)
+                    frame = screen_inspector.process_image_bytes(raw_bytes)
+                    ring_buffer.append(frame)
+                    await manager.broadcast_frame(frame)
+                except Exception as e:
+                    logger.warning(f"Error capturing or broadcasting frame in stream worker: {e}")
+            await asyncio.sleep(0.4)  # ~2.5 FPS throttle interval
     except asyncio.CancelledError:
-        logger.info("Logcat worker task cancelled.")
+        logger.info("Screen stream worker task cancelled.")
     except Exception as e:
-        logger.error(f"Error in logcat worker: {e}")
+        logger.error(f"Fatal error in screen stream worker: {e}")
 
 
 
@@ -212,6 +265,42 @@ async def get_health():
 async def list_devices():
     """Returns connected ADB devices or mock devices."""
     return adb_manager.list_devices()
+
+
+@app.api_route("/api/device/select", methods=["POST", "GET"])
+async def select_device(request: Request):
+    """Switches the active target ADB device serial.
+
+    Accepts the target serial either from a JSON POST body (`{"serial": "..."}`) or
+    URL query parameter (`?serial=...`). Updates `adb_manager.serial` so subsequent
+    frame capture, logcat streaming, and device commands target the selected device.
+
+    Args:
+        request: FastAPI Request containing JSON body or query parameters.
+
+    Returns:
+        Dict indicating status and active device serial.
+
+    Raises:
+        HTTPException: 400 Bad Request if serial is not provided.
+    """
+    serial = None
+    if request.method == "POST":
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.json()
+                serial = body.get("serial")
+            except Exception:
+                pass
+    if not serial:
+        serial = request.query_params.get("serial")
+    if not serial:
+        raise HTTPException(status_code=400, detail="Device serial is required")
+
+    adb_manager.serial = serial
+    logger.info(f"Active device switched to serial: {serial}")
+    return {"status": "success", "serial": serial}
 
 
 @app.get("/api/frames/latest")
@@ -322,6 +411,7 @@ async def generate_patch(report: DiagnosticReport):
 @app.post("/api/device/command")
 async def execute_command(cmd: DeviceCommand):
     """Executes a device control command."""
+    global is_streaming_active
     cmd_type = cmd.type.upper()
     payload = cmd.payload
 
@@ -348,6 +438,14 @@ async def execute_command(cmd: DeviceCommand):
         log_window.clear()
         return {"status": "success", "message": "Logcat cleared"}
 
+    elif cmd_type == "TOGGLE_STREAM":
+        if "active" in payload:
+            is_streaming_active = bool(payload["active"])
+        else:
+            is_streaming_active = not is_streaming_active
+        logger.info(f"TOGGLE_STREAM command executed. is_streaming_active={is_streaming_active}")
+        return {"status": "success", "is_streaming_active": is_streaming_active}
+
     return {"status": "unknown_command", "type": cmd.type}
 
 
@@ -357,30 +455,40 @@ async def execute_command(cmd: DeviceCommand):
 
 @app.websocket("/ws/stream")
 async def websocket_stream(websocket: WebSocket):
-    """WebSocket channel for live frame streaming.
+    """WebSocket channel for live frame streaming and client stream control.
 
-    Accepts frames from Android streaming app or triggers periodic captures,
-    and broadcasts frames to connected UI clients.
+    Registers connected browser clients, ingests incoming frames from mobile agents,
+    serves on-demand frame requests (`request_frame`), and synchronizes streaming state
+    (`toggle_stream`). Unregisters clients upon disconnect.
     """
+    global is_streaming_active
     await manager.connect_stream(websocket)
     try:
         while True:
-            # Handle incoming messages (e.g. from Android client sending frames)
+            # Handle incoming messages (e.g. from Android client sending frames or UI control)
             message_text = await websocket.receive_text()
             try:
                 data = json.loads(message_text)
                 msg_type = data.get("type")
                 if msg_type == "frame":
                     frame_data = data.get("payload", {})
-                    # If incoming from Android app
+                    # Ingest frame uploaded from on-device streaming agent
                     frame = ScreenFrame(**frame_data)
                     ring_buffer.append(frame)
                     await manager.broadcast_frame(frame)
                 elif msg_type == "request_frame":
+                    # Capture and broadcast immediate on-demand screenshot
                     raw_bytes = adb_manager.capture_screenshot()
                     frame = screen_inspector.process_image_bytes(raw_bytes)
                     ring_buffer.append(frame)
                     await manager.broadcast_frame(frame)
+                elif msg_type == "toggle_stream":
+                    # Toggle or set explicit streaming state
+                    if "active" in data.get("payload", {}):
+                        is_streaming_active = bool(data["payload"]["active"])
+                    else:
+                        is_streaming_active = not is_streaming_active
+                    logger.info(f"WebSocket toggle_stream: is_streaming_active={is_streaming_active}")
             except Exception as e:
                 logger.warning(f"Error handling stream websocket message: {e}")
     except WebSocketDisconnect:
@@ -391,9 +499,9 @@ async def websocket_stream(websocket: WebSocket):
 async def websocket_logcat(websocket: WebSocket):
     """WebSocket channel for streaming real-time parsed logcat entries to the UI."""
     await manager.connect_logcat(websocket)
-    # Immediately send existing windowed logs
+    # Immediately send existing windowed logs so log history appears immediately
     try:
-        for entry in log_window.get_entries()[-50:]:
+        for entry in log_window.get_entries():
             await websocket.send_text(
                 WebSocketMessage(type="logcat", payload=entry.model_dump()).model_dump_json()
             )

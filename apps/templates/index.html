@@ -26,6 +26,7 @@
             <div class="status-pill device-pill" id="device-status">
                 <span class="status-dot" id="device-dot"></span>
                 <span class="status-label" id="device-label">Detecting Device...</span>
+                <select id="device-select" class="device-dropdown"></select>
             </div>
             <button class="btn btn-primary" id="btn-diagnose">⚡ Run Multimodal Diagnosis</button>
         </div>
@@ -42,6 +43,7 @@
                 <div class="pane-actions">
                     <span class="telemetry-item" id="fps-counter">0.0 FPS</span>
                     <span class="telemetry-item" id="resolution-counter">-- x --</span>
+                    <button class="btn btn-sm btn-primary" id="btn-toggle-stream">🔴 Live Stream</button>
                     <button class="btn btn-sm btn-secondary" id="btn-keyframe" title="Request immediate keyframe">📸 Snapshot</button>
                 </div>
             </div>
