@@ -1,7 +1,8 @@
 """Unified LLM client interface for local and API-based models."""
 
-from typing import List, Optional
-from transformers import pipeline, Pipeline
+
+from transformers import Pipeline, pipeline
+
 from config.settings import DEFAULT_LLM_MODEL
 from src.core.logger import setup_logger
 
@@ -22,9 +23,9 @@ class HuggingFaceLocalLLM:
         prompt: str,
         max_length: int = 50,
         num_return_sequences: int = 1,
-        temperature: Optional[float] = None,
+        temperature: float | None = None,
         **kwargs
-    ) -> List[str]:
+    ) -> list[str]:
         """Generate text completions for a given prompt."""
         gen_kwargs = {
             "max_length": max_length,

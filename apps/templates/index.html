@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GenAI Mobile App Debugger & Issue Analyzer</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-left">
+            <div class="logo-mark">⚡</div>
+            <div class="header-title">
+                <h1>GenAI Mobile Debugger</h1>
+                <span class="subtitle">Real-Time Mobile Screen Streamer & Multimodal Remediation</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="status-pill" id="server-status">
+                <span class="status-dot online"></span>
+                <span class="status-label">Server Connected</span>
+            </div>
+            <div class="status-pill device-pill" id="device-status">
+                <span class="status-dot" id="device-dot"></span>
+                <span class="status-label" id="device-label">Detecting Device...</span>
+            </div>
+            <button class="btn btn-primary" id="btn-diagnose">⚡ Run Multimodal Diagnosis</button>
+        </div>
+    </header>
+
+    <main class="dashboard-container">
+        <!-- Left Pane: Mobile Screen Viewport -->
+        <section class="pane screen-pane">
+            <div class="pane-header">
+                <div class="pane-title">
+                    <h2>Live Device Viewport</h2>
+                    <span class="badge" id="screen-state-badge">NORMAL</span>
+                </div>
+                <div class="pane-actions">
+                    <span class="telemetry-item" id="fps-counter">0.0 FPS</span>
+                    <span class="telemetry-item" id="resolution-counter">-- x --</span>
+                    <button class="btn btn-sm btn-secondary" id="btn-keyframe" title="Request immediate keyframe">📸 Snapshot</button>
+                </div>
+            </div>
+
+            <div class="screen-viewport-wrapper">
+                <div class="device-frame">
+                    <div class="device-speaker"></div>
+                    <div class="device-screen-container">
+                        <canvas id="screen-canvas" width="720" height="1280"></canvas>
+                        <div class="screen-placeholder" id="screen-placeholder">
+                            <div class="spinner"></div>
+                            <p>Waiting for incoming screen stream...</p>
+                            <small>Connect device via USB or launch Android capture client</small>
+                        </div>
+                    </div>
+                    <div class="device-home-bar"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right Pane: Diagnostic & Control Console -->
+        <section class="pane console-pane">
+            <div class="tabs-header">
+                <button class="tab-btn active" data-tab="tab-logcat">📜 Live Logcat</button>
+                <button class="tab-btn" data-tab="tab-diagnostics">🧠 GenAI Triage</button>
+                <button class="tab-btn" data-tab="tab-patch">🛠️ IDE Patch Bridge</button>
+                <button class="tab-btn" data-tab="tab-control">🎮 Device Controls</button>
+            </div>
+
+            <!-- Tab 1: Live Logcat Streamer -->
+            <div class="tab-pane active" id="tab-logcat">
+                <div class="logcat-toolbar">
+                    <div class="level-filters">
+                        <button class="level-btn active" data-level="ALL">ALL</button>
+                        <button class="level-btn" data-level="V">V</button>
+                        <button class="level-btn" data-level="D">D</button>
+                        <button class="level-btn" data-level="I">I</button>
+                        <button class="level-btn" data-level="W">W</button>
+                        <button class="level-btn" data-level="E">E</button>
+                        <button class="level-btn" data-level="F">F</button>
+                    </div>
+                    <input type="text" id="logcat-search" class="input-search" placeholder="Filter by tag or message...">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="autoscroll-toggle" checked>
+                        <span>Auto-scroll</span>
+                    </label>
+                    <button class="btn btn-sm btn-ghost" id="btn-clear-logs">Clear</button>
+                    <span class="badge badge-pii" title="PIISanitizer active on all streaming lines">🔒 PII Redacted</span>
+                </div>
+                <div class="logcat-terminal" id="logcat-terminal">
+                    <!-- Log lines streamed here dynamically -->
+                </div>
+            </div>
+
+            <!-- Tab 2: Multimodal GenAI Diagnostic Report -->
+            <div class="tab-pane" id="tab-diagnostics">
+                <div class="diagnostics-view" id="diagnostics-view">
+                    <div class="diagnostics-placeholder" id="diagnostics-placeholder">
+                        <p>No active diagnostic report.</p>
+                        <button class="btn btn-primary" id="btn-trigger-diagnose-tab">Run Multimodal Diagnosis Now</button>
+                    </div>
+
+                    <div class="report-content" id="report-content" style="display: none;">
+                        <div class="report-header-card">
+                            <div class="report-meta">
+                                <span class="report-id" id="rep-id">RPT-8942</span>
+                                <span class="report-timestamp" id="rep-time">2026-11-15 12:00:00</span>
+                            </div>
+                            <div class="confidence-meter">
+                                <span class="confidence-label">Confidence:</span>
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill" id="rep-conf-fill" style="width: 95%;"></div>
+                                </div>
+                                <span class="confidence-value" id="rep-conf-val">95%</span>
+                            </div>
+                        </div>
+
+                        <div class="card error-card">
+                            <h3>Detected Fault Summary</h3>
+                            <div class="error-summary-box" id="rep-summary">FATAL EXCEPTION: NullPointerException in FeedScreen.kt:42</div>
+                        </div>
+
+                        <div class="card">
+                            <h3>Multimodal Root-Cause Analysis</h3>
+                            <p class="root-cause-text" id="rep-root-cause">
+                                The application encountered an unhandled NullPointerException when accessing uiState.userProfile.name prior to asynchronous data fetch completion. The UI viewport confirms the app abruptly closed into the crash dialog state.
+                            </p>
+                        </div>
+
+                        <div class="card">
+                            <h3>Affected Code Targets</h3>
+                            <ul class="affected-list" id="rep-affected">
+                                <li><code>app/src/main/java/com/example/mobileapp/ui/FeedScreen.kt:42</code></li>
+                            </ul>
+                        </div>
+
+                        <div class="card">
+                            <h3>Suggested Remediation Strategy</h3>
+                            <p class="fix-summary-text" id="rep-fix">
+                                Use safe null navigation (?.) or provide a default fallback state in FeedUiState.Loading. Collect state using collectAsStateWithLifecycle().
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab 3: IDE Patch Bridge -->
+            <div class="tab-pane" id="tab-patch">
+                <div class="patch-view">
+                    <div class="patch-header">
+                        <h3>Automated IDE Remediation Prompts</h3>
+                        <div class="patch-actions">
+                            <button class="btn btn-sm btn-secondary" id="btn-copy-cursor">📋 Copy Cursor Prompt</button>
+                            <button class="btn btn-sm btn-secondary" id="btn-copy-antigravity">🪐 Copy Antigravity Handoff</button>
+                        </div>
+                    </div>
+
+                    <div class="diff-viewer-wrapper">
+                        <h4>Unified Git Diff Proposal</h4>
+                        <pre class="diff-block" id="diff-content"><span class="diff-header">--- a/app/src/main/java/com/example/mobileapp/ui/FeedScreen.kt
++++ b/app/src/main/java/com/example/mobileapp/ui/FeedScreen.kt</span>
+<span class="diff-chunk">@@ -40,4 +40,4 @@</span>
+ Column(modifier = Modifier.fillMaxSize()) {
+<span class="diff-del">-    Text(text = uiState.userProfile.name)</span>
+<span class="diff-add">+    Text(text = uiState.userProfile?.name ?: "Guest")</span>
+ }</pre>
+                    </div>
+
+                    <div class="ide-preview-wrapper">
+                        <h4>Formatted Cursor Composer Prompt Preview</h4>
+                        <div class="ide-prompt-box" id="cursor-prompt-preview">
+                            Click "Run Multimodal Diagnosis" to generate prompt.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab 4: Two-Way Device Controls -->
+            <div class="tab-pane" id="tab-control">
+                <div class="control-view">
+                    <div class="card">
+                        <h3>Application Lifecycle Management</h3>
+                        <div class="form-row">
+                            <label for="target-package-input">Target Package:</label>
+                            <input type="text" id="target-package-input" class="input-text" value="com.example.mobileapp">
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn btn-secondary" id="btn-restart-app">🔄 Restart Application</button>
+                            <button class="btn btn-danger" id="btn-clear-app-data">🗑️ Clear App Data</button>
+                            <button class="btn btn-secondary" id="btn-clear-logcat-cmd">🧹 Clear Logcat Buffer</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>Diagnostics & Fault Injection (QA Simulation)</h3>
+                        <p class="section-desc">Simulate common production faults to test the multimodal diagnostic loop:</p>
+                        <div class="btn-group">
+                            <button class="btn btn-warning" id="btn-sim-npe">Simulate NullPointerException Crash</button>
+                            <button class="btn btn-warning" id="btn-sim-anr">Simulate ANR Freeze (10s lockup)</button>
+                            <button class="btn btn-warning" id="btn-sim-leak">Simulate Activity Memory Leak</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>Stream Configuration Protocol</h3>
+                        <div class="config-grid">
+                            <div class="config-item">
+                                <label>Target FPS:</label>
+                                <select id="select-fps" class="select-input">
+                                    <option value="5">5 FPS (Low Bandwidth)</option>
+                                    <option value="10" selected>10 FPS (Recommended)</option>
+                                    <option value="15">15 FPS (High Performance)</option>
+                                </select>
+                            </div>
+                            <div class="config-item">
+                                <label>Encoding Quality:</label>
+                                <select id="select-quality" class="select-input">
+                                    <option value="60">60% (Compact)</option>
+                                    <option value="80" selected>80% (Balanced WebP)</option>
+                                    <option value="95">95% (Lossless Detail)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

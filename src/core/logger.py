@@ -3,6 +3,7 @@
 import logging
 import sys
 
+
 def setup_logger(name: str = "genai", level: int = logging.INFO) -> logging.Logger:
     """Configures and returns a logger instance with formatted console output."""
     logger = logging.getLogger(name)
