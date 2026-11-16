@@ -1,7 +1,15 @@
 """Core utilities, clients, models, and ingestion modules."""
 
 from .adb_manager import ADBManager
-from .llm_client import HuggingFaceLocalLLM
+from .llm_client import (
+    BaseMultimodalLLMClient,
+    ClaudeMultimodalClient,
+    GeminiMultimodalClient,
+    HuggingFaceLocalLLM,
+    MockMultimodalClient,
+    OpenAIMultimodalClient,
+    get_multimodal_client,
+)
 from .logcat_parser import LogcatParser, LogcatStreamer, PIISanitizer, SlidingLogWindow
 from .logger import setup_logger
 from .models import (
@@ -10,6 +18,7 @@ from .models import (
     DeviceStatus,
     DiagnosticReport,
     IDEActionPrompt,
+    LLMUsageMetadata,
     LogEntry,
     LogLevel,
     ScreenFrame,
@@ -21,17 +30,23 @@ from .screen_inspector import FrameRingBuffer, ScreenInspector
 
 __all__ = [
     "ADBManager",
+    "BaseMultimodalLLMClient",
+    "ClaudeMultimodalClient",
     "CrashSignature",
     "DeviceCommand",
     "DeviceStatus",
     "DiagnosticReport",
     "FrameRingBuffer",
+    "GeminiMultimodalClient",
     "HuggingFaceLocalLLM",
     "IDEActionPrompt",
+    "LLMUsageMetadata",
     "LogEntry",
     "LogLevel",
     "LogcatParser",
     "LogcatStreamer",
+    "MockMultimodalClient",
+    "OpenAIMultimodalClient",
     "PIISanitizer",
     "PatchGenerator",
     "ScreenFrame",
@@ -39,5 +54,6 @@ __all__ = [
     "ScreenState",
     "SlidingLogWindow",
     "WebSocketMessage",
+    "get_multimodal_client",
     "setup_logger",
 ]

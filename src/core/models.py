@@ -72,6 +72,16 @@ class CrashSignature(BaseModel):
     raw_stacktrace: str = Field(description="Deduplicated, complete stack trace block")
 
 
+class LLMUsageMetadata(BaseModel):
+    """Token usage and latency telemetry for multimodal LLM inferences."""
+    provider: str = Field(description="LLM provider name (e.g. gemini, claude, openai, mock)")
+    model_name: str = Field(description="Model identifier (e.g. gemini-2.0-flash, mock-vlm-v1)")
+    prompt_tokens: int = Field(default=0, ge=0, description="Input prompt tokens consumed")
+    completion_tokens: int = Field(default=0, ge=0, description="Output completion tokens generated")
+    total_tokens: int = Field(default=0, ge=0, description="Total tokens consumed in inference call")
+    latency_ms: float = Field(default=0.0, ge=0.0, description="Inference latency in milliseconds")
+
+
 class DiagnosticReport(BaseModel):
     """Validated output of the Multimodal Diagnostic Engine."""
     report_id: str = Field(default_factory=lambda: f"RPT-{uuid.uuid4().hex[:8].upper()}", description="Unique diagnostic report ID")
@@ -86,6 +96,7 @@ class DiagnosticReport(BaseModel):
     affected_components: list[str] = Field(default_factory=list, description="List of source files, Composable names, or activities")
     suggested_fix_summary: str = Field(description="Concise description of the suggested remediation strategy")
     crash_signature: CrashSignature | None = Field(default=None, description="Structured crash details if fatal crash")
+    usage: LLMUsageMetadata | None = Field(default=None, description="LLM inference usage telemetry")
 
 
 class IDEActionPrompt(BaseModel):

@@ -28,6 +28,14 @@
                 <span class="status-label" id="device-label">Detecting Device...</span>
                 <select id="device-select" class="device-dropdown"></select>
             </div>
+            <div class="status-pill llm-pill" id="llm-status">
+                <span class="status-dot online" id="llm-dot"></span>
+                <span class="status-label" id="llm-label">⚡ Mock VLM</span>
+                <select id="llm-select" class="device-dropdown" title="Select LLM Provider"></select>
+            </div>
+            <div class="status-pill telemetry-pill" id="token-telemetry" title="Cumulative Token Telemetry">
+                <span class="status-label" id="token-label">Tokens: 0 in / 0 out (0 total)</span>
+            </div>
             <button class="btn btn-primary" id="btn-diagnose">⚡ Run Multimodal Diagnosis</button>
         </div>
     </header>
@@ -111,6 +119,9 @@
                             <div class="report-meta">
                                 <span class="report-id" id="rep-id">RPT-8942</span>
                                 <span class="report-timestamp" id="rep-time">2026-11-15 12:00:00</span>
+                                <span class="badge badge-llm" id="rep-provider-badge">⚡ Mock VLM</span>
+                                <span class="badge badge-telemetry" id="rep-latency-badge">Latency: --</span>
+                                <span class="badge badge-telemetry" id="rep-tokens-badge">Tokens: --</span>
                             </div>
                             <div class="confidence-meter">
                                 <span class="confidence-label">Confidence:</span>

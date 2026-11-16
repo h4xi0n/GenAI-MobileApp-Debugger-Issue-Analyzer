@@ -191,6 +191,38 @@ body {
     color: var(--accent-success);
 }
 
+.badge-llm {
+    background: rgba(139, 92, 246, 0.2);
+    border-color: rgba(139, 92, 246, 0.5);
+    color: #ddd6fe;
+}
+
+.badge-telemetry {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.4);
+    color: #93c5fd;
+    font-family: 'Fira Code', monospace;
+}
+
+.llm-pill {
+    background: rgba(139, 92, 246, 0.1);
+    border-color: rgba(139, 92, 246, 0.35);
+    color: #c4b5fd;
+}
+
+.llm-pill .status-dot.online {
+    background-color: #a78bfa;
+    box-shadow: 0 0 8px rgba(167, 139, 250, 0.7);
+}
+
+.telemetry-pill {
+    background: rgba(59, 130, 246, 0.08);
+    border-color: rgba(59, 130, 246, 0.3);
+    color: #93c5fd;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.76rem;
+}
+
 .pane-actions {
     display: flex;
     align-items: center;

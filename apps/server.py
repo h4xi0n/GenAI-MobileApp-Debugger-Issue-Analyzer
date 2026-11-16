@@ -8,6 +8,7 @@ Author: Arun Krishnan
 
 import asyncio
 import json
+import os
 import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -34,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.core.adb_manager import ADBManager
+from src.core.llm_client import get_multimodal_client
 from src.core.logcat_parser import LogcatParser, SlidingLogWindow
 from src.core.logger import setup_logger
 from src.core.models import (
@@ -41,6 +43,7 @@ from src.core.models import (
     DeviceStatus,
     DiagnosticReport,
     IDEActionPrompt,
+    LLMUsageMetadata,
     LogEntry,
     ScreenFrame,
     ScreenState,
@@ -48,6 +51,7 @@ from src.core.models import (
 )
 from src.core.patch_generator import PatchGenerator
 from src.core.screen_inspector import FrameRingBuffer, ScreenInspector
+from src.prompts.templates import STAFF_ANDROID_SYSTEM_PROMPT, build_diagnostic_prompt
 
 logger = setup_logger("server")
 
@@ -103,11 +107,22 @@ logcat_background_task: asyncio.Task | None = None
 screen_background_task: asyncio.Task | None = None
 is_streaming_active: bool = True
 
+# Active LLM Provider State & Cumulative Telemetry
+active_llm_provider: str = os.getenv("DEFAULT_LLM_PROVIDER", "mock")
+active_llm_model: str | None = None
+cumulative_llm_tokens: dict[str, int] = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+}
+last_llm_usage: LLMUsageMetadata | None = None
+
 
 class ConnectionManager:
     """Manages active WebSocket connections across channels."""
 
     def __init__(self):
+        """Initializes empty client sets for stream, logcat, control, and device channels."""
         self.stream_clients: set[WebSocket] = set()
         self.logcat_clients: set[WebSocket] = set()
         self.control_clients: set[WebSocket] = set()
@@ -243,9 +258,6 @@ async def screen_stream_worker():
         logger.error(f"Fatal error in screen stream worker: {e}")
 
 
-
-
-
 # -----------------------------------------------------------------------------
 # REST API Endpoints
 # -----------------------------------------------------------------------------
@@ -325,9 +337,98 @@ async def get_latest_frame():
     return frame
 
 
+@app.get("/api/llm/status")
+async def get_llm_status():
+    """Returns current LLM provider, active model, token telemetry, and available providers."""
+    providers = [
+        {"provider": "mock", "name": "Offline Mock VLM", "available": True, "active": active_llm_provider == "mock"},
+        {"provider": "gemini", "name": "Google Gemini (2.0 Flash)", "available": bool(os.getenv("GEMINI_API_KEY")), "active": active_llm_provider == "gemini"},
+        {"provider": "claude", "name": "Anthropic Claude (3.5 Sonnet)", "available": bool(os.getenv("ANTHROPIC_API_KEY")), "active": active_llm_provider in ["claude", "anthropic"]},
+        {"provider": "openai", "name": "OpenAI (GPT-4o)", "available": bool(os.getenv("OPENAI_API_KEY")), "active": active_llm_provider == "openai"},
+    ]
+    client = get_multimodal_client(active_llm_provider, active_llm_model)
+    return {
+        "active_provider": client.provider,
+        "active_model": client.model,
+        "available_providers": providers,
+        "cumulative_tokens": cumulative_llm_tokens,
+        "last_usage": last_llm_usage.model_dump() if last_llm_usage else None,
+    }
+
+
+@app.api_route("/api/llm/select", methods=["POST", "GET"])
+async def select_llm(request: Request):
+    """Switches the active LLM provider and model.
+
+    Accepts parameters from either JSON POST body ({"provider": "...", "model": "..."})
+    or URL query parameters (?provider=...&model=...). Updates global provider configuration,
+    instantiates the requested client via the factory, and broadcasts an 'llm_status'
+    event to all connected control WebSocket clients.
+
+    Args:
+        request: FastAPI Request containing JSON body or query parameters.
+
+    Returns:
+        Dict indicating status, active provider, and active model.
+
+    Raises:
+        HTTPException: 400 Bad Request if provider is not specified.
+    """
+    global active_llm_provider, active_llm_model
+    provider = None
+    model = None
+    if request.method == "POST":
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.json()
+                provider = body.get("provider")
+                model = body.get("model")
+            except Exception:
+                pass
+    if not provider:
+        provider = request.query_params.get("provider")
+        model = request.query_params.get("model") or model
+    if not provider:
+        raise HTTPException(status_code=400, detail="LLM provider is required")
+
+    active_llm_provider = provider.strip().lower()
+    active_llm_model = model
+    client = get_multimodal_client(active_llm_provider, active_llm_model)
+    logger.info(f"Active LLM switched to provider: {client.provider}, model: {client.model}")
+
+    # Broadcast LLM status update over WebSocket control channel
+    await manager.broadcast_control({
+        "type": "llm_status",
+        "payload": {
+            "active_provider": client.provider,
+            "active_model": client.model,
+            "cumulative_tokens": cumulative_llm_tokens,
+        },
+    })
+
+    return {
+        "status": "success",
+        "active_provider": client.provider,
+        "active_model": client.model,
+    }
+
+
 @app.post("/api/diagnose", response_model=DiagnosticReport)
 async def trigger_diagnose():
-    """Synthesizes a multimodal diagnostic report from current frame buffer and logcat."""
+    """Synthesizes a multimodal diagnostic report using the active VLM client.
+
+    Retrieves current logcat buffer entries from SlidingLogWindow and extracts crash
+    signatures. Ingests the latest viewport frame from FrameRingBuffer (or captures an
+    immediate on-demand frame). Formats a multimodal Chain-of-Thought prompt with injected
+    Pydantic schema, dispatches to the active client (falling back to MockMultimodalClient
+    upon failure), accumulates token usage telemetry, broadcasts the result over
+    the WebSocket control channel, and returns the DiagnosticReport.
+
+    Returns:
+        Validated DiagnosticReport including root cause, suggested fix, and usage telemetry.
+    """
+    global last_llm_usage
     entries = log_window.get_entries()
     crash_sig = logcat_parser.extract_crash_signature(entries)
 
@@ -336,41 +437,52 @@ async def trigger_diagnose():
         raw_bytes = adb_manager.capture_screenshot()
         latest_frame = screen_inspector.process_image_bytes(
             raw_bytes,
-            screen_state=ScreenState.CRASH_DIALOG if crash_sig else ScreenState.NORMAL
+            screen_state=ScreenState.CRASH_DIALOG if crash_sig else ScreenState.NORMAL,
         )
         ring_buffer.append(latest_frame)
 
-    if crash_sig:
-        error_summary = f"{crash_sig.exception_type}: {crash_sig.exception_message}"
-        root_cause = (
-            f"Fatal runtime crash detected in package '{crash_sig.package_name}'. "
-            f"The application encountered an unhandled exception at {crash_sig.crashing_file or 'Unknown'}"
-            f":{crash_sig.crashing_line or 0}. Visual inspection indicates an abnormal screen termination."
-        )
-        affected = [f"app/src/main/java/{crash_sig.crashing_file}"] if crash_sig.crashing_file else ["FeedScreen.kt"]
-        suggested_fix = "Implement safe null check (?.) or default fallback state before accessing properties on uninitialized state."
-        confidence = 0.95
-    else:
-        error_summary = "Application Running - No Fatal Crash Detected"
-        root_cause = "UI viewport rendering normally without active fatal exceptions in logcat stream."
-        affected = []
-        suggested_fix = "Continue observation or trigger reproduction sequence."
-        confidence = 0.90
-
-    report = DiagnosticReport(
-        package_name=crash_sig.package_name if crash_sig else "com.example.mobileapp",
-        error_summary=error_summary,
-        root_cause_analysis=root_cause,
-        confidence_score=confidence,
-        affected_components=affected,
-        suggested_fix_summary=suggested_fix,
+    pkg_name = crash_sig.package_name if crash_sig else "com.example.mobileapp"
+    prompt = build_diagnostic_prompt(
+        package_name=pkg_name,
+        log_entries=entries,
         crash_signature=crash_sig,
+        screen_state=latest_frame.screen_state.value if hasattr(latest_frame.screen_state, "value") else str(latest_frame.screen_state),
+        device_meta={"serial": adb_manager.serial or "emulator-5554", "mock_mode": adb_manager.mock_mode},
     )
 
-    # Broadcast diagnosis over control WebSocket channel
+    client = get_multimodal_client(active_llm_provider, active_llm_model)
+    try:
+        report, usage = await client.diagnose(
+            prompt=prompt,
+            image_bytes_base64=latest_frame.image_bytes_base64,
+            mime_type=latest_frame.mime_type,
+            system_prompt=STAFF_ANDROID_SYSTEM_PROMPT,
+        )
+    except Exception as e:
+        logger.error(f"Multimodal diagnosis with {client.provider} failed: {e}. Falling back to Mock.", exc_info=True)
+        fallback_client = get_multimodal_client("mock")
+        report, usage = await fallback_client.diagnose(
+            prompt=prompt,
+            image_bytes_base64=latest_frame.image_bytes_base64,
+            mime_type=latest_frame.mime_type,
+            system_prompt=STAFF_ANDROID_SYSTEM_PROMPT,
+        )
+
+    # Attach crash signature if detected by parser but omitted by model
+    if crash_sig and not report.crash_signature:
+        report.crash_signature = crash_sig
+
+    # Update cumulative telemetry
+    cumulative_llm_tokens["prompt_tokens"] += usage.prompt_tokens
+    cumulative_llm_tokens["completion_tokens"] += usage.completion_tokens
+    cumulative_llm_tokens["total_tokens"] += usage.total_tokens
+    last_llm_usage = usage
+
+    # Broadcast diagnosis and telemetry over control WebSocket channel
     await manager.broadcast_control({
         "type": "diagnostic_report",
         "payload": report.model_dump(),
+        "usage": usage.model_dump(),
     })
 
     return report
