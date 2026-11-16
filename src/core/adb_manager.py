@@ -259,8 +259,19 @@ class ADBManager:
                             break
                         stripped = line.strip()
                         if stripped:
+                            def _safe_put(s=stripped):
+                                try:
+                                    if queue.full():
+                                        try:
+                                            queue.get_nowait()
+                                        except Exception:
+                                            pass
+                                    queue.put_nowait(s)
+                                except Exception:
+                                    pass
+
                             try:
-                                loop.call_soon_threadsafe(queue.put_nowait, stripped)
+                                loop.call_soon_threadsafe(_safe_put)
                             except RuntimeError:
                                 break
             except Exception:
