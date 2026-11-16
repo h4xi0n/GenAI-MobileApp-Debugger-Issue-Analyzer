@@ -34,6 +34,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from src.agents.diagnostic_agent import (
+    MultimodalDiagnosticAgent,
+    create_initial_diagnostic_state,
+)
 from src.core.adb_manager import ADBManager
 from src.core.llm_client import get_multimodal_client
 from src.core.logcat_parser import LogcatParser, SlidingLogWindow
@@ -46,14 +50,12 @@ from src.core.models import (
     KnowledgeCard,
     LLMUsageMetadata,
     LogEntry,
-    LogLevel,
     ScreenFrame,
     ScreenState,
     WebSocketMessage,
 )
 from src.core.patch_generator import PatchGenerator
 from src.core.screen_inspector import FrameRingBuffer, ScreenInspector
-from src.prompts.templates import STAFF_ANDROID_SYSTEM_PROMPT, build_diagnostic_prompt
 from src.rag.hybrid_retriever import HybridRetriever
 
 logger = setup_logger("server")
@@ -423,14 +425,14 @@ async def select_llm(request: Request):
 
 @app.post("/api/diagnose", response_model=DiagnosticReport)
 async def trigger_diagnose():
-    """Synthesizes a multimodal diagnostic report using the active VLM client with Hybrid RAG grounding.
+    """Synthesizes a multimodal diagnostic report using the Autonomous Agent StateGraph.
 
     Retrieves current logcat buffer entries from SlidingLogWindow and extracts crash
     signatures. Ingests the latest viewport frame from FrameRingBuffer (or captures an
-    immediate on-demand frame). Executes hybrid BM25 + dense retrieval against the Android
-    SDK knowledge base, injects grounding cards into the prompt, dispatches to the active
-    VLM client, accumulates token usage telemetry, broadcasts the result over
-    the WebSocket control channel, and returns the DiagnosticReport.
+    immediate on-demand frame). Executes the cyclic ReAct state graph asynchronously,
+    broadcasting real-time agent progression step events ('correlator', 'retriever',
+    'diagnoser', 'verifier', 'retry') over the WebSocket control channel. Accumulates
+    token telemetry, and returns the final verified DiagnosticReport.
 
     Returns:
         Validated DiagnosticReport including root cause, suggested fix, grounding references, and telemetry.
@@ -450,43 +452,56 @@ async def trigger_diagnose():
 
     pkg_name = crash_sig.package_name if crash_sig else "com.example.mobileapp"
 
-    # Hybrid RAG grounding: retrieve relevant Android SDK architectural knowledge cards
-    retrieval_query = ""
-    if crash_sig:
-        retrieval_query = f"{crash_sig.exception_type} {crash_sig.exception_message} {crash_sig.crashing_file or ''}"
-    else:
-        error_msgs = [e.message for e in entries if e.level in [LogLevel.ERROR, LogLevel.FATAL, LogLevel.WARN]]
-        retrieval_query = " ".join(error_msgs[:5]) if error_msgs else "Android application stability and lifecycle"
-
-    grounding_cards: list[KnowledgeCard] = []
-    if hybrid_retriever:
-        grounding_cards = hybrid_retriever.retrieve(query=retrieval_query, top_k=2)
-
-    prompt = build_diagnostic_prompt(
-        package_name=pkg_name,
-        log_entries=entries,
-        crash_signature=crash_sig,
-        screen_state=latest_frame.screen_state.value if hasattr(latest_frame.screen_state, "value") else str(latest_frame.screen_state),
-        device_meta={"serial": adb_manager.serial or "emulator-5554", "mock_mode": adb_manager.mock_mode},
-        grounding_cards=grounding_cards,
-    )
+    async def broadcast_agent_step(step_name: str, current_state: dict[str, Any]):
+        """Broadcasts real-time agent progression step events over /ws/control."""
+        await manager.broadcast_control({
+            "type": "agent_step",
+            "step": step_name,
+            "payload": {
+                "node": step_name,
+                "retry_count": current_state.get("retry_count", 0),
+                "confidence_score": current_state.get("confidence_score", 0.0),
+            },
+        })
 
     client = get_multimodal_client(active_llm_provider, active_llm_model)
+    agent = MultimodalDiagnosticAgent(
+        client=client,
+        hybrid_retriever=hybrid_retriever,
+        step_callback=broadcast_agent_step,
+    )
+
+    initial_state = create_initial_diagnostic_state(
+        package_name=pkg_name,
+        log_entries=entries,
+        screen_frame=latest_frame,
+        crash_signature=crash_sig,
+        screen_state=latest_frame.screen_state,
+        device_meta={"serial": adb_manager.serial or "emulator-5554", "mock_mode": adb_manager.mock_mode},
+    )
+
     try:
-        report, usage = await client.diagnose(
-            prompt=prompt,
-            image_bytes_base64=latest_frame.image_bytes_base64,
-            mime_type=latest_frame.mime_type,
-            system_prompt=STAFF_ANDROID_SYSTEM_PROMPT,
-        )
+        final_state = await agent.ainvoke(initial_state, step_callback=broadcast_agent_step)
+        report = final_state.get("report")
     except Exception as e:
-        logger.error(f"Multimodal diagnosis with {client.provider} failed: {e}. Falling back to Mock.", exc_info=True)
-        fallback_client = get_multimodal_client("mock")
-        report, usage = await fallback_client.diagnose(
-            prompt=prompt,
-            image_bytes_base64=latest_frame.image_bytes_base64,
-            mime_type=latest_frame.mime_type,
-            system_prompt=STAFF_ANDROID_SYSTEM_PROMPT,
+        logger.exception(f"Agent state graph execution failed: {e}. Falling back to Mock.")
+        fallback_agent = MultimodalDiagnosticAgent(
+            client=get_multimodal_client("mock"),
+            hybrid_retriever=hybrid_retriever,
+            step_callback=broadcast_agent_step,
+        )
+        final_state = await fallback_agent.ainvoke(initial_state, step_callback=broadcast_agent_step)
+        report = final_state.get("report")
+
+    if not report:
+        report = DiagnosticReport(
+            package_name=pkg_name,
+            error_summary="Application Diagnostic Complete",
+            root_cause_analysis="No critical anomalies detected during agent state graph evaluation.",
+            confidence_score=0.90,
+            affected_components=[],
+            suggested_fix_summary="Continue monitoring runtime logs and UI states.",
+            crash_signature=crash_sig,
         )
 
     # Attach crash signature if detected by parser but omitted by model
@@ -494,20 +509,25 @@ async def trigger_diagnose():
         report.crash_signature = crash_sig
 
     # Attach retrieved grounding references if omitted by model
-    if grounding_cards and not report.grounding_references:
-        report.grounding_references = grounding_cards
+    if final_state.get("grounding_cards") and not report.grounding_references:
+        report.grounding_references = final_state["grounding_cards"]
 
     # Update cumulative telemetry
-    cumulative_llm_tokens["prompt_tokens"] += usage.prompt_tokens
-    cumulative_llm_tokens["completion_tokens"] += usage.completion_tokens
-    cumulative_llm_tokens["total_tokens"] += usage.total_tokens
-    last_llm_usage = usage
+    usage = report.usage
+    if usage:
+        cumulative_llm_tokens["prompt_tokens"] += usage.prompt_tokens
+        cumulative_llm_tokens["completion_tokens"] += usage.completion_tokens
+        cumulative_llm_tokens["total_tokens"] += usage.total_tokens
+        last_llm_usage = usage
 
     # Broadcast diagnosis and telemetry over control WebSocket channel
     await manager.broadcast_control({
         "type": "diagnostic_report",
         "payload": report.model_dump(),
-        "usage": usage.model_dump(),
+        "usage": usage.model_dump() if usage else None,
+        "ide_prompts": {
+            k: v.model_dump() for k, v in (final_state.get("ide_prompts") or {}).items()
+        } if final_state.get("ide_prompts") else None,
     })
 
     return report

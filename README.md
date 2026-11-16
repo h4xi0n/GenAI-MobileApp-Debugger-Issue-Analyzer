@@ -8,12 +8,15 @@ A production-grade, multimodal developer companion that bridges runtime mobile a
 
 ## 🌟 Key Capabilities
 
+- **Autonomous Multi-Agent Diagnostic Loop (LangGraph):** Cyclic ReAct StateGraph orchestrating fault triage through 4 specialized nodes (`CorrelatorNode` -> `RetrieverNode` -> `DiagnoserNode` -> `VerifierNode`), supported by a pure-Python zero-dependency fallback runner.
+- **Self-Correcting Iterative Feedback Loop:** Dynamic verification gating ensuring only diagnoses with confidence $\ge 0.85$ are accepted; low-confidence analyses trigger actionable feedback injection and targeted retrieval refinements (bounded to 2 retries).
+- **Native ReAct Tool Suite & Confinement:** Sandboxed execution of `DeviceInfoTool` (hardware/API specs), `LogFilterTool` (tag/level/thread slicing), and `FileInspectionTool` (source window extraction with strict directory traversal prevention).
+- **Hybrid RAG Knowledge Retrieval:** Combines sparse BM25Okapi lexical matching with dense vector embeddings via Reciprocal Rank Fusion (RRF) to ground diagnoses in curated Android SDK architectural patterns.
 - **Two-Way Live Screen Streaming:** Sub-100ms real-time screen streaming via WebSockets (`/ws/stream`) and HTML5 canvas with dynamic downsampling (Lanczos) and WebP/JPEG compression.
 - **Live Logcat Correlation & PII Redaction:** High-throughput threadtime log ingestion with instant regex redaction of Bearer tokens, JWTs, emails, UUIDs, and IP addresses.
-- **Multimodal GenAI Triage:** Temporal alignment between captured screen keyframes and logcat crash signatures (`FATAL EXCEPTION`, `ANR in`), synthesizing high-confidence root-cause analyses.
 - **Automated IDE Patch Generation:** Synthesizes unified Git diffs and ready-to-paste action prompts for **Cursor Composer** (`@file`) and **Antigravity** specialist subagents (`ROLE: general-dev`).
 - **Native Android Streaming Client:** Modern Kotlin app targeting Android 14 (API 34) using `MediaProjection`, foreground capture service, and OkHttp WebSocket streaming.
-- **100% Offline Testability:** Comprehensive offline mock engine for ADB discovery, screenshot capture, and logcat replay requiring zero connected hardware.
+- **100% Offline Testability (59/59 Tests):** Full test suite executing deterministically in ~3s with zero external hardware or network dependencies.
 
 ---
 
@@ -36,10 +39,22 @@ flowchart TD
         PatchGen["PatchGenerator\n(Unified Git Diff Engine)"]
     end
 
+    subgraph AgentLayer["Autonomous Diagnostic Loop (src/agents & src/rag)"]
+        CorrelatorNode["CorrelatorNode\n(CrashSignature & Query Formulation)"]
+        RetrieverNode["RetrieverNode\n(Hybrid RAG BM25 + Dense RRF)"]
+        DiagnoserNode["DiagnoserNode\n(Multimodal CoT + ReAct Loop)"]
+        VerifierNode["VerifierNode\n(Confidence >= 0.85 & Feedback)"]
+        ToolSuite["Tool Suite\n(DeviceInfo, LogFilter, FileInspection)"]
+        
+        CorrelatorNode --> RetrieverNode --> DiagnoserNode --> VerifierNode
+        DiagnoserNode <--> ToolSuite
+        VerifierNode -- "Confidence < 0.85 (Retry < 2)" --> RetrieverNode
+    end
+
     subgraph ServerLayer["FastAPI WebSocket Backend (apps/server.py)"]
         WS_Stream["/ws/stream (Frame Broadcast)"]
         WS_Logcat["/ws/logcat (Live Logcat Stream)"]
-        WS_Control["/ws/control (Full-Duplex Commands)"]
+        WS_Control["/ws/control (Full-Duplex Commands & Telemetry)"]
         REST["REST APIs (/api/diagnose, /api/patch)"]
     end
 
@@ -56,7 +71,8 @@ flowchart TD
 
     RingBuf --> WS_Stream --> Viewport
     Window --> WS_Logcat --> Terminal
-    Window & RingBuf --> REST --> Triage
+    Window & RingBuf --> REST --> CorrelatorNode
+    VerifierNode --> REST --> Triage
     REST --> PatchGen --> Bridge
 ```
 
@@ -86,7 +102,7 @@ GenAI tutorial/
 │   └── demo_app.py                  # Streamlit alternative interface
 │
 ├── docs/                            # Architectural Guides & Specifications
-│   └── FOUNDATIONS.md               # Exhaustive foundation component guide
+│   └── FOUNDATIONS.md               # Exhaustive foundation & agent component guide
 │
 ├── src/                             # Reusable Python Core Modules
 │   ├── core/                        # Ingestion, parsing, data contracts, diff synthesis
@@ -95,15 +111,23 @@ GenAI tutorial/
 │   │   ├── logcat_parser.py         # LogcatParser, PIISanitizer, SlidingLogWindow
 │   │   ├── screen_inspector.py      # ScreenInspector, FrameRingBuffer
 │   │   ├── patch_generator.py       # Diff synthesis, Cursor & Antigravity formatters
-│   │   ├── llm_client.py            # Local HuggingFace & provider interface
+│   │   ├── llm_client.py            # Multimodal client interface & mock provider
 │   │   └── logger.py                # Centralized structured logging
 │   ├── rag/                         # Retrieval-Augmented Generation components
-│   ├── agents/                      # Diagnostic agent reasoning loops
-│   ├── prompts/                     # Prompt templates
-│   └── evaluation/                  # Benchmark scoring
+│   │   ├── hybrid_retriever.py      # Sparse BM25 + Dense RRF fusion engine
+│   │   └── vector_store.py          # Vector store & in-memory embeddings
+│   ├── agents/                      # Autonomous Diagnostic Reasoning Loops
+│   │   ├── diagnostic_agent.py      # LangGraph cyclic ReAct state graph & fallback runner
+│   │   └── tools.py                 # DeviceInfoTool, LogFilterTool, FileInspectionTool, ToolRegistry
+│   ├── prompts/                     # Prompt templates & system instructions
+│   │   └── templates.py             # Staff Android engineer prompts
+│   └── evaluation/                  # Benchmark scoring & metrics
 │
-├── tests/                           # Automated Verification Test Suite
-│   ├── test_foundations.py          # Offline unit tests (models, ADB, logcat, diffs)
+├── tests/                           # Automated Verification Test Suite (59 Tests)
+│   ├── test_agent_graph.py          # StateGraph nodes, ReAct tools, retry loop, API integration
+│   ├── test_diagnoser.py            # Multimodal CoT reasoning & prompt synthesis
+│   ├── test_foundations.py          # Models, ADB mock, log parsing, PII redaction, diffs
+│   ├── test_retriever.py            # BM25 + Dense RRF retrieval & knowledge card scoring
 │   └── test_text_gen.py             # Baseline prompt & tool tests
 │
 ├── requirements.txt                 # Categorized Python dependencies
@@ -204,13 +228,31 @@ DONE
 
 ## 🧪 Running Automated Tests
 
-Run the complete test suite offline:
+Run the complete test suite (59 passing tests) offline:
 
 ```bash
+# Run all 59 tests across all suites
+python -m pytest tests/ -v
+
+# Run the LangGraph agent state machine & tool suite
+python -m pytest tests/test_agent_graph.py -v
+
+# Run foundation tests (models, ADB mock, log parsing, PII redaction, diffs)
 python -m pytest tests/test_foundations.py -v
+
+# Run Hybrid RAG retriever tests (BM25 + Dense RRF)
+python -m pytest tests/test_retriever.py -v
+
+# Run multimodal diagnoser tests
+python -m pytest tests/test_diagnoser.py -v
 ```
 
-All 14 tests validate data contracts, ADB mock fallback, log parsing, PII scrubbing, screen downscaling, ring buffer rotation, patch synthesis, and REST APIs without external dependencies.
+All 59 tests execute completely offline without requiring physical hardware, live emulator connections, or external API keys:
+- `test_agent_graph.py` (25 tests): StateGraph nodes (`CorrelatorNode`, `RetrieverNode`, `DiagnoserNode`, `VerifierNode`), ReAct tools (`DeviceInfoTool`, `LogFilterTool`, `FileInspectionTool`), path traversal security, self-correction retry bounding, pure-Python fallback StateGraph runner, and FastAPI `/api/diagnose` integration.
+- `test_diagnoser.py` (10 tests): Multimodal CoT reasoning, prompt templates, and schema verification.
+- `test_foundations.py` (14 tests): Data contracts, ADB process orchestration, threadtime parsing, PII scrubbing, screen downsampling, ring buffer rotation, and Git diff synthesis.
+- `test_retriever.py` (8 tests): BM25 lexical search, dense embeddings, Reciprocal Rank Fusion (RRF), and knowledge card retrieval.
+- `test_text_gen.py` (2 tests): Baseline prompt & tool execution sanity checks.
 
 ---
 
