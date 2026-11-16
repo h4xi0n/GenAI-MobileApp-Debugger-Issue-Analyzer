@@ -142,8 +142,8 @@ GenAI tutorial/
 
 ```bash
 # Clone the repository
-git clone <repository_url>
-cd "GenAI tutorial"
+git clone https://github.com/h4xi0n/GenAI-MobileApp-Debugger-Issue-Analyzer.git
+cd GenAI-MobileApp-Debugger-Issue-Analyzer
 
 # Create and activate virtual environment
 python -m venv venv
@@ -253,6 +253,26 @@ All 59 tests execute completely offline without requiring physical hardware, liv
 - `test_foundations.py` (14 tests): Data contracts, ADB process orchestration, threadtime parsing, PII scrubbing, screen downsampling, ring buffer rotation, and Git diff synthesis.
 - `test_retriever.py` (8 tests): BM25 lexical search, dense embeddings, Reciprocal Rank Fusion (RRF), and knowledge card retrieval.
 - `test_text_gen.py` (2 tests): Baseline prompt & tool execution sanity checks.
+
+---
+
+## 🗺️ 1-Month Accelerated GenAI Mastery Roadmap
+
+This companion system is developed as the practical portfolio capstone supporting author Arun Krishnan's transition from Senior Android Engineer to GenAI Product Engineer. See [ROADMAP_1MONTH_SENIOR.md](ROADMAP_1MONTH_SENIOR.md) for the structured 4-week curriculum:
+
+- **Week 1: Core Multimodal LLM Foundations & Ingestion Pipeline** (Completed)
+  - Android MediaProjection streaming & ADB shell orchestration.
+  - Multi-provider VLM Gateway (Gemini 2.0 Flash / Claude 3.5 Sonnet / GPT-4o) with 5-step Chain-of-Thought prompts.
+- **Week 2: Advanced Hybrid RAG & Vector Search** (Completed)
+  - Sparse BM25Okapi + Dense vector embeddings fused with Reciprocal Rank Fusion ($k=60$).
+  - Curated Android SDK knowledge base grounded in Compose, Media3, and Coroutine concurrency traps.
+- **Week 3: Autonomous Multi-Agent Systems & LangGraph** (Completed)
+  - Cyclic ReAct StateGraph (`CorrelatorNode` $\to$ `RetrieverNode` $\to$ `DiagnoserNode` $\to$ `VerifierNode`).
+  - Native sandboxed tool suite (`DeviceInfoTool`, `LogFilterTool`, `FileInspectionTool`).
+  - Iterative self-correction feedback loop (confidence $\ge 0.85$, bounded to 2 retries).
+- **Week 4: IDE Remediation & Production Deployment** (In Progress)
+  - Cursor Composer action prompts & Antigravity MAS specialist handoffs.
+  - High-concurrency FastAPI serving with WebSocket telemetry.
 
 ---
 
