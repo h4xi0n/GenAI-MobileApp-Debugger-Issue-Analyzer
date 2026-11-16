@@ -1,7 +1,8 @@
 """Embeddings generator using Sentence Transformers or compatible models."""
 
-from typing import List
+
 import numpy as np
+
 from config.settings import DEFAULT_EMBEDDING_MODEL
 from src.core.logger import setup_logger
 
@@ -23,7 +24,7 @@ class TextEmbedder:
             self._model = SentenceTransformer(self.model_name)
         return self._model
 
-    def embed_texts(self, texts: List[str]) -> np.ndarray:
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
         """Encode list of strings into embedding vectors."""
         return self.model.encode(texts, convert_to_numpy=True)
 

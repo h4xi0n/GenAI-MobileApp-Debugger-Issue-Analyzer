@@ -43,8 +43,10 @@ from src.core.models import (
     DeviceStatus,
     DiagnosticReport,
     IDEActionPrompt,
+    KnowledgeCard,
     LLMUsageMetadata,
     LogEntry,
+    LogLevel,
     ScreenFrame,
     ScreenState,
     WebSocketMessage,
@@ -52,6 +54,7 @@ from src.core.models import (
 from src.core.patch_generator import PatchGenerator
 from src.core.screen_inspector import FrameRingBuffer, ScreenInspector
 from src.prompts.templates import STAFF_ANDROID_SYSTEM_PROMPT, build_diagnostic_prompt
+from src.rag.hybrid_retriever import HybridRetriever
 
 logger = setup_logger("server")
 
@@ -65,8 +68,11 @@ TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initializes background workers on startup and cleans up on shutdown."""
-    global logcat_background_task, screen_background_task
+    """Initializes HybridRetriever and background streaming workers on startup and cleans up on shutdown."""
+    global logcat_background_task, screen_background_task, hybrid_retriever
+    if hybrid_retriever is None:
+        hybrid_retriever = HybridRetriever()
+    logger.info("HybridRetriever knowledge base warmed up on startup.")
     logcat_background_task = asyncio.create_task(logcat_worker())
     screen_background_task = asyncio.create_task(screen_stream_worker())
     yield
@@ -101,6 +107,7 @@ screen_inspector = ScreenInspector()
 ring_buffer = FrameRingBuffer(capacity=5)
 log_window = SlidingLogWindow(max_lines=300)
 logcat_parser = LogcatParser()
+hybrid_retriever = HybridRetriever()
 
 # Background Task Handles & Streaming Control Flags
 logcat_background_task: asyncio.Task | None = None
@@ -416,17 +423,17 @@ async def select_llm(request: Request):
 
 @app.post("/api/diagnose", response_model=DiagnosticReport)
 async def trigger_diagnose():
-    """Synthesizes a multimodal diagnostic report using the active VLM client.
+    """Synthesizes a multimodal diagnostic report using the active VLM client with Hybrid RAG grounding.
 
     Retrieves current logcat buffer entries from SlidingLogWindow and extracts crash
     signatures. Ingests the latest viewport frame from FrameRingBuffer (or captures an
-    immediate on-demand frame). Formats a multimodal Chain-of-Thought prompt with injected
-    Pydantic schema, dispatches to the active client (falling back to MockMultimodalClient
-    upon failure), accumulates token usage telemetry, broadcasts the result over
+    immediate on-demand frame). Executes hybrid BM25 + dense retrieval against the Android
+    SDK knowledge base, injects grounding cards into the prompt, dispatches to the active
+    VLM client, accumulates token usage telemetry, broadcasts the result over
     the WebSocket control channel, and returns the DiagnosticReport.
 
     Returns:
-        Validated DiagnosticReport including root cause, suggested fix, and usage telemetry.
+        Validated DiagnosticReport including root cause, suggested fix, grounding references, and telemetry.
     """
     global last_llm_usage
     entries = log_window.get_entries()
@@ -442,12 +449,26 @@ async def trigger_diagnose():
         ring_buffer.append(latest_frame)
 
     pkg_name = crash_sig.package_name if crash_sig else "com.example.mobileapp"
+
+    # Hybrid RAG grounding: retrieve relevant Android SDK architectural knowledge cards
+    retrieval_query = ""
+    if crash_sig:
+        retrieval_query = f"{crash_sig.exception_type} {crash_sig.exception_message} {crash_sig.crashing_file or ''}"
+    else:
+        error_msgs = [e.message for e in entries if e.level in [LogLevel.ERROR, LogLevel.FATAL, LogLevel.WARN]]
+        retrieval_query = " ".join(error_msgs[:5]) if error_msgs else "Android application stability and lifecycle"
+
+    grounding_cards: list[KnowledgeCard] = []
+    if hybrid_retriever:
+        grounding_cards = hybrid_retriever.retrieve(query=retrieval_query, top_k=2)
+
     prompt = build_diagnostic_prompt(
         package_name=pkg_name,
         log_entries=entries,
         crash_signature=crash_sig,
         screen_state=latest_frame.screen_state.value if hasattr(latest_frame.screen_state, "value") else str(latest_frame.screen_state),
         device_meta={"serial": adb_manager.serial or "emulator-5554", "mock_mode": adb_manager.mock_mode},
+        grounding_cards=grounding_cards,
     )
 
     client = get_multimodal_client(active_llm_provider, active_llm_model)
@@ -471,6 +492,10 @@ async def trigger_diagnose():
     # Attach crash signature if detected by parser but omitted by model
     if crash_sig and not report.crash_signature:
         report.crash_signature = crash_sig
+
+    # Attach retrieved grounding references if omitted by model
+    if grounding_cards and not report.grounding_references:
+        report.grounding_references = grounding_cards
 
     # Update cumulative telemetry
     cumulative_llm_tokens["prompt_tokens"] += usage.prompt_tokens
@@ -525,6 +550,71 @@ async def generate_patch(report: DiagnosticReport):
         "cursor": cursor_prompt,
         "antigravity": antigravity_prompt,
     }
+
+
+@app.api_route("/api/rag/search", methods=["GET", "POST"], response_model=list[KnowledgeCard])
+async def rag_search(
+    request: Request,
+    query: str | None = None,
+    top_k: int = 3,
+    category: str | None = None,
+):
+    """Searches the Android SDK Knowledge Base using the HybridRetriever (BM25 + Dense RRF).
+
+    Accepts search parameters via query parameters (?query=...&top_k=3&category=...) or
+    JSON POST request body ({"query": "...", "top_k": 3, "category": "..."}).
+
+    Args:
+        request: FastAPI Request object.
+        query: Search query string or exception snippet.
+        top_k: Maximum number of grounded knowledge cards to return.
+        category: Optional category filter (e.g. COMPOSE, COROUTINES_ANR, LIFECYCLE).
+
+    Returns:
+        Ranked list of KnowledgeCard models with normalized confidence scores.
+
+    Raises:
+        HTTPException: 400 Bad Request if query is missing.
+    """
+    search_query = query
+    search_top_k = top_k
+    search_category = category
+
+    if request.method == "POST":
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    search_query = body.get("query", search_query)
+                    search_top_k = body.get("top_k", search_top_k)
+                    search_category = body.get("category", search_category)
+            except Exception:
+                pass
+
+    if not search_query:
+        search_query = request.query_params.get("query")
+
+    if not search_query or not search_query.strip():
+        raise HTTPException(status_code=400, detail="Search query is required")
+
+    try:
+        raw_top_k = request.query_params.get("top_k", search_top_k)
+        search_top_k = int(raw_top_k)
+    except (TypeError, ValueError):
+        search_top_k = 3
+
+    if not search_category:
+        search_category = request.query_params.get("category")
+
+    if not hybrid_retriever:
+        return []
+
+    return hybrid_retriever.retrieve(
+        query=search_query.strip(),
+        top_k=search_top_k,
+        category=search_category,
+    )
 
 
 @app.post("/api/device/command")

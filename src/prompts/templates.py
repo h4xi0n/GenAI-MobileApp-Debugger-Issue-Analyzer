@@ -6,7 +6,7 @@ Author: Arun Krishnan
 import json
 from typing import Any
 
-from src.core.models import CrashSignature, DiagnosticReport, LogEntry
+from src.core.models import CrashSignature, DiagnosticReport, KnowledgeCard, LogEntry
 
 
 class PromptTemplate:
@@ -42,6 +42,8 @@ Follow this strict 5-step Chain-of-Thought (CoT) cross-modal reasoning protocol:
 4. Root-Cause Synthesis: Deduce the underlying software defect rooted in Android Jetpack, Kotlin Coroutine lifecycle, thread contention, unhandled null references, Compose recomposition loops, or resource starvation.
 5. Actionable Remediation: Prescribe idiomatic, null-safe Kotlin and Jetpack Compose remediation steps, pinpointing affected source files, composables, and line numbers.
 
+When retrieved Android SDK Knowledge references are supplied, ground your technical explanation and suggested Kotlin fixes directly in those architectural patterns and cite their canonical IDs.
+
 CRITICAL OUTPUT REQUIREMENT:
 You must output ONLY valid, raw, unescaped JSON matching the exact DiagnosticReport schema provided.
 Do NOT include preamble, markdown commentary, or explanations outside the JSON object.
@@ -59,6 +61,9 @@ MULTIMODAL_DIAGNOSTIC_USER_PROMPT = """### Target Application Context
 ```text
 {logcat_window}
 ```
+
+### Grounded Android SDK Knowledge & Architectural References:
+{grounding_context_block}
 
 ### Mandatory Output Schema (Pydantic v2 DiagnosticReport):
 Ensure your output strictly adheres to the following JSON schema:
@@ -81,6 +86,7 @@ def build_diagnostic_prompt(
     crash_signature: CrashSignature | None = None,
     screen_state: str = "UNKNOWN",
     device_meta: dict[str, Any] | None = None,
+    grounding_cards: list[KnowledgeCard] | None = None,
 ) -> str:
     """Builds a fully formatted multimodal diagnostic prompt with injected JSON schema.
 
@@ -90,6 +96,7 @@ def build_diagnostic_prompt(
         crash_signature: Extracted CrashSignature model if fatal crash detected.
         screen_state: Screen state string representation (e.g. 'NORMAL', 'CRASH_DIALOG').
         device_meta: Optional dictionary of device information.
+        grounding_cards: Optional list of retrieved KnowledgeCard references for architectural grounding.
 
     Returns:
         Formatted user prompt string ready for multimodal LLM submission.
@@ -115,6 +122,24 @@ def build_diagnostic_prompt(
     else:
         crash_block = "None detected. Evaluate logs and visual screen for anomalies."
 
+    # Format retrieved KnowledgeCard instances into structured Markdown references for VLM grounding
+    if grounding_cards:
+        cards_formatted = []
+        for idx, card in enumerate(grounding_cards, 1):
+            conf_str = f"{int(card.confidence_score * 100)}%" if card.confidence_score else "N/A"
+            doc_link = card.doc_url or (card.doc_references[0] if card.doc_references else "N/A")
+            cards_formatted.append(
+                f"Reference {idx}: [{card.doc_id}] {card.title} (Category: {card.category}, Confidence: {conf_str})\n"
+                f"- Symptoms: {card.symptoms}\n"
+                f"- Root Cause Pattern: {card.root_cause_explanation}\n"
+                f"- Recommended Remediation: {card.recommended_fix_pattern}\n"
+                f"- Remediation Code Snippet:\n```kotlin\n{card.code_example_kotlin}\n```\n"
+                f"- Official Reference: {doc_link}"
+            )
+        grounding_context_block = "\n\n".join(cards_formatted)
+    else:
+        grounding_context_block = "None retrieved or applicable."
+
     schema_str = json.dumps(get_diagnostic_schema(), indent=2)
     device_meta_str = json.dumps(device_meta or {"platform": "Android", "arch": "arm64-v8a"})
 
@@ -124,5 +149,6 @@ def build_diagnostic_prompt(
         device_meta=device_meta_str,
         crash_signature_block=crash_block,
         logcat_window=formatted_logs,
+        grounding_context_block=grounding_context_block,
         schema_json=schema_str,
     )

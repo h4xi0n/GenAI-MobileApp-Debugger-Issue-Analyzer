@@ -58,6 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
         repRootCause: document.getElementById('rep-root-cause'),
         repAffected: document.getElementById('rep-affected'),
         repFix: document.getElementById('rep-fix'),
+        repGroundingContainer: document.getElementById('rep-grounding-container'),
         // Patch
         diffContent: document.getElementById('diff-content'),
         cursorPreview: document.getElementById('cursor-prompt-preview'),
@@ -511,6 +512,103 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         elements.repFix.textContent = report.suggested_fix_summary;
+
+        // Render Grounded Android SDK Knowledge Cards
+        renderGroundingCards(report.grounding_references);
+    }
+
+    /**
+     * Renders retrieved Android SDK knowledge cards in the GenAI Triage tab.
+     * Displays category badges, titles, confidence pills, root cause breakdowns,
+     * and copyable Kotlin code snippets.
+     * @param {Array<Object>|null} cards - Array of KnowledgeCard models.
+     */
+    function renderGroundingCards(cards) {
+        if (!elements.repGroundingContainer) return;
+        elements.repGroundingContainer.innerHTML = '';
+
+        if (!cards || cards.length === 0) {
+            elements.repGroundingContainer.innerHTML = `
+                <div class="grounding-empty-state">
+                    <p>No critical Android SDK anomalies retrieved. Application running within standard operating parameters.</p>
+                </div>
+            `;
+            return;
+        }
+
+        cards.forEach((card) => {
+            const cardEl = document.createElement('div');
+            cardEl.className = 'grounding-card';
+
+            // Map category taxonomy to corresponding CSS badge style
+            const category = (card.category || 'ANDROID').toUpperCase();
+            let badgeClass = 'badge-general';
+            if (category.includes('COMPOSE')) badgeClass = 'badge-compose';
+            else if (category.includes('COROUTINE') || category.includes('ANR')) badgeClass = 'badge-coroutine';
+            else if (category.includes('LIFECYCLE')) badgeClass = 'badge-lifecycle';
+            else if (category.includes('MEDIA3') || category.includes('CAMERAX')) badgeClass = 'badge-media3';
+            else if (category.includes('LEAK') || category.includes('MEMORY')) badgeClass = 'badge-leak';
+
+            const confPercent = Math.round((card.confidence_score || 0) * 100);
+            const snippet = card.code_example_kotlin || card.remediation_snippet || '';
+            const docUrl = card.doc_url || (card.doc_references && card.doc_references[0]) || '#';
+
+            cardEl.innerHTML = `
+                <div class="grounding-card-header">
+                    <div class="grounding-title-group">
+                        <span class="badge ${badgeClass}">${escapeHtml(category)}</span>
+                        <span class="grounding-doc-id">[${escapeHtml(card.doc_id)}]</span>
+                        <h4 class="grounding-title">${escapeHtml(card.title)}</h4>
+                    </div>
+                    <div class="grounding-confidence-pill" title="RRF Match Confidence">
+                        🎯 ${confPercent}% Match
+                    </div>
+                </div>
+                <div class="grounding-card-body">
+                    <div class="grounding-field">
+                        <strong>Symptoms:</strong>
+                        <p>${escapeHtml(card.symptoms || '')}</p>
+                    </div>
+                    <div class="grounding-field">
+                        <strong>Root Cause Pattern:</strong>
+                        <p>${escapeHtml(card.root_cause_explanation || '')}</p>
+                    </div>
+                    <div class="grounding-field">
+                        <strong>Recommended Strategy:</strong>
+                        <p>${escapeHtml(card.recommended_fix_pattern || '')}</p>
+                    </div>
+                    ${snippet ? `
+                    <div class="grounding-code-wrapper">
+                        <div class="grounding-code-header">
+                            <span>Kotlin Remediation Snippet</span>
+                            <button class="btn btn-xs btn-secondary btn-copy-code" type="button">📋 Copy Snippet</button>
+                        </div>
+                        <pre class="grounding-code-block"><code>${escapeHtml(snippet)}</code></pre>
+                    </div>
+                    ` : ''}
+                    <div class="grounding-doc-footer">
+                        <a href="${escapeHtml(docUrl)}" target="_blank" rel="noopener noreferrer" class="grounding-doc-link">
+                            📖 Official Android Documentation ↗
+                        </a>
+                    </div>
+                </div>
+            `;
+
+            // Attach one-click clipboard copy listener with visual confirmation feedback
+            const copyBtn = cardEl.querySelector('.btn-copy-code');
+            if (copyBtn && snippet) {
+                copyBtn.addEventListener('click', () => {
+                    navigator.clipboard.writeText(snippet);
+                    copyBtn.textContent = '✓ Copied!';
+                    setTimeout(() => {
+                        copyBtn.textContent = '📋 Copy Snippet';
+                    }, 2000);
+                    showToast(`Copied ${card.doc_id} snippet to clipboard`);
+                });
+            }
+
+            elements.repGroundingContainer.appendChild(cardEl);
+        });
     }
 
     /**

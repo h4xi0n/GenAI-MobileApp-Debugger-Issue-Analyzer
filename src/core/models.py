@@ -82,6 +82,23 @@ class LLMUsageMetadata(BaseModel):
     latency_ms: float = Field(default=0.0, ge=0.0, description="Inference latency in milliseconds")
 
 
+class KnowledgeCard(BaseModel):
+    """Curated Android SDK architectural knowledge card retrieved via Hybrid RAG."""
+    doc_id: str = Field(description="Unique identifier for the knowledge card")
+    category: str = Field(description="Category of the issue (e.g. COMPOSE, COROUTINES_ANR, LIFECYCLE, MEDIA3_CAMERAX, MEMORY_LEAKS)")
+    title: str = Field(description="Canonical title of the Android issue")
+    exception_patterns: list[str] = Field(default_factory=list, description="Exception types or regex patterns associated with this issue")
+    symptoms: str = Field(description="Observable symptoms or failure modes")
+    root_cause_explanation: str = Field(description="Detailed technical root cause explanation")
+    recommended_fix_pattern: str = Field(description="Architectural remediation strategy and best practices")
+    code_example_kotlin: str = Field(description="Idiomatic Kotlin / Jetpack Compose code snippet demonstrating fix")
+    doc_references: list[str] = Field(default_factory=list, description="Official Android documentation or AOSP links")
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Normalized relevance confidence score")
+    doc_url: str | None = Field(default=None, description="Primary documentation URL")
+    match_type: Literal["dense", "sparse", "hybrid"] = Field(default="hybrid", description="Type of search match")
+    remediation_snippet: str | None = Field(default=None, description="Alias or shorthand for code_example_kotlin")
+
+
 class DiagnosticReport(BaseModel):
     """Validated output of the Multimodal Diagnostic Engine."""
     report_id: str = Field(default_factory=lambda: f"RPT-{uuid.uuid4().hex[:8].upper()}", description="Unique diagnostic report ID")
@@ -97,6 +114,7 @@ class DiagnosticReport(BaseModel):
     suggested_fix_summary: str = Field(description="Concise description of the suggested remediation strategy")
     crash_signature: CrashSignature | None = Field(default=None, description="Structured crash details if fatal crash")
     usage: LLMUsageMetadata | None = Field(default=None, description="LLM inference usage telemetry")
+    grounding_references: list[KnowledgeCard] = Field(default_factory=list, description="Retrieved Android SDK knowledge cards used for grounding")
 
 
 class IDEActionPrompt(BaseModel):

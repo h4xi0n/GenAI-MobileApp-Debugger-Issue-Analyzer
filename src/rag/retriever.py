@@ -1,22 +1,23 @@
 """In-memory vector store & retrieval mechanism for semantic search."""
 
-from typing import List, Tuple
+
 import numpy as np
+
 
 class SimpleInMemoryVectorStore:
     """Lightweight in-memory vector store with cosine similarity retrieval."""
 
     def __init__(self):
-        self.documents: List[str] = []
-        self.embeddings: List[np.ndarray] = []
+        self.documents: list[str] = []
+        self.embeddings: list[np.ndarray] = []
 
-    def add_documents(self, docs: List[str], embeddings: np.ndarray) -> None:
+    def add_documents(self, docs: list[str], embeddings: np.ndarray) -> None:
         """Add documents and their pre-computed embeddings to store."""
         for doc, emb in zip(docs, embeddings):
             self.documents.append(doc)
             self.embeddings.append(emb)
 
-    def similarity_search(self, query_emb: np.ndarray, top_k: int = 3) -> List[Tuple[str, float]]:
+    def similarity_search(self, query_emb: np.ndarray, top_k: int = 3) -> list[tuple[str, float]]:
         """Retrieve top_k documents most similar to query embedding."""
         if not self.embeddings:
             return []
